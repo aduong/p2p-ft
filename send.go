@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
 	"os"
-	"crypto/sha256"
 	"time"
 
 	"github.com/grandcat/zeroconf"
@@ -123,16 +127,48 @@ func main () {
 	}
 	fmt.Printf("transfer accepted\n")
 
+	// send IV
+	iv := make([]byte, aes.BlockSize)
+	if _, err := rand.Read(iv); err != nil {
+		fmt.Printf("err: %v\n", err)
+		return
+	}
+	if _, err := io.Copy(conn, bytes.NewBuffer(iv)); err != nil {
+		fmt.Printf("err: %v\n", err)
+		return
+	}
+
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		fmt.Printf("err: %v\n", err)
+		return
+	}
+	fmt.Printf("shared key is %s\n", base64.StdEncoding.EncodeToString(key))
+	blockCipher, err := aes.NewCipher(key)
+	if err != nil {
+		fmt.Printf("err: %v\n", err)
+		return
+	}
+	streamCipher := cipher.NewCTR(blockCipher, iv)
+
+	fmt.Printf("waiting for signal to start...\n"
+	if _, err := io.ReadFull(conn, yn[:]); err != nil {
+		fmt.Printf("err: %v\n", err)
+		return
+	}
+
 	// send data
 	hash := sha256.New()
 	tee := io.TeeReader(file, hash)
 	sent := uint64(0)
+	encryptedConn := cipher.StreamWriter{S: streamCipher, W: conn}
+	startTime := time.Now()
 	for sent < size {
 		block := BlockSize
 		if size - sent < BlockSize {
 			block = size - sent
 		}
-		n, err := io.CopyN(conn, tee, int64(block))
+		n, err := io.CopyN(encryptedConn, tee, int64(block))
 		sent += uint64(n)
 		if err != nil {
 			fmt.Printf("err after sending %d bytes: %v\n", sent, err)
@@ -140,6 +176,8 @@ func main () {
 		}
 		fmt.Printf("%d / %d (%d%%)\n", sent, size, 100*sent/size)
 	}
+	endTime := time.Now()
 
 	fmt.Printf("Done sending. SHA256: %x\n", hash.Sum(nil))
+	fmt.Printf("Sent %d bytes in %d seconds\n", sent, endTime.Unix() - startTime.Unix())
 }

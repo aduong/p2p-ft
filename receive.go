@@ -2,13 +2,18 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/grandcat/zeroconf"
@@ -25,15 +30,22 @@ func main () {
 	defer listener.Close()
 	localAddr := listener.Addr().(*net.TCPAddr)
 
-	uuid, _ := uuid.NewUUID()
-	server, err := zeroconf.Register(uuid.String(), P2PServiceType, "local.", localAddr.Port, nil, nil)
+	var serviceName string
+	if len(os.Args) > 1 && os.Args[1] != "" {
+		serviceName = os.Args[1]
+	} else {
+		id, _ := uuid.NewUUID()
+		serviceName = id.String()
+	}
+
+	server, err := zeroconf.Register(serviceName, P2PServiceType, "local.", localAddr.Port, nil, nil)
 	if err != nil {
 		fmt.Printf("err: %v\n", err)
 		return
 	}
 	defer server.Shutdown()
 
-	fmt.Printf("Service %s listening at %v\n", uuid.String(), localAddr)
+	fmt.Printf("Service %s listening at %v\n", serviceName, localAddr)
 
 	stdinReader := bufio.NewReader(os.Stdin)
 	empty := make([]byte, 256)
@@ -79,14 +91,42 @@ func main () {
 		}
 
 		if strings.ToLower(strings.TrimSpace(input)) != "y" {
-			conn.Write([]byte{0})
+			if _, err := io.Copy(conn, bytes.NewBuffer([]byte{0})); err != nil {
+				fmt.Printf("err: %v\n", err)
+			}
 			continue
 		}
 
-		if _, err := conn.Write([]byte{1}); err != nil {
+		if _, err := io.Copy(conn, bytes.NewBuffer([]byte{1})); err != nil {
 			fmt.Printf("err: %v\n", err)
 			continue
 		}
+
+		fmt.Printf("decryption key: ")
+		input, err = stdinReader.ReadString('\n')
+		if err != nil {
+			fmt.Printf("err: %v\n", err)
+			continue
+		}
+		key, err := base64.StdEncoding.DecodeString(input)
+		if err != nil {
+			fmt.Printf("err: %v\n", err)
+			continue
+		}
+
+		blockCipher, err := aes.NewCipher(key)
+		if err != nil {
+			fmt.Printf("err: %v\n", err)
+			continue
+		}
+
+		iv := make([]byte, aes.BlockSize)
+		if _, err := io.ReadFull(conn, iv); err != nil {
+			fmt.Printf("err: %v\n", err)
+			continue
+		}
+
+		streamCipher := cipher.NewCTR(blockCipher, iv)
 
 		file, err := os.Create(string(filename))
 		if err != nil {
@@ -94,9 +134,16 @@ func main () {
 			continue
 		}
 
+		// initiate transfer
+		if _, err := io.Copy(conn, bytes.NewBuffer([]byte{1})); err != nil {
+			fmt.Printf("err: %v\n", err)
+			continue
+		}
+
 		hash := sha256.New()
-		tee := io.TeeReader(conn, hash)
+		tee := io.TeeReader(cipher.StreamReader{S: streamCipher, R: conn}, hash)
 		received := uint64(0)
+		startTime := time.Now()
 		for received < size {
 			block := BlockSize
 			if size - received < BlockSize {
@@ -110,7 +157,9 @@ func main () {
 			}
 			fmt.Printf("%d / %d (%d%%)\n", received, size, 100*received/size)
 		}
+		endTime := time.Now()
 
 		fmt.Printf("Done receiving. SHA256: %x\n", hash.Sum(nil))
+		fmt.Printf("Received %d bytes in %d seconds\n", received, endTime.Unix() - startTime.Unix())
 	}
 }

@@ -151,7 +151,7 @@ func main () {
 	}
 	streamCipher := cipher.NewCTR(blockCipher, iv)
 
-	fmt.Printf("waiting for signal to start...\n"
+	fmt.Printf("waiting for signal to start...\n")
 	if _, err := io.ReadFull(conn, yn[:]); err != nil {
 		fmt.Printf("err: %v\n", err)
 		return

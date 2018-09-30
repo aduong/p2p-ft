@@ -160,7 +160,8 @@ func main() {
 			fmt.Printf("err after sending %d bytes: %v\n", sent, err)
 			return
 		}
-		fmt.Printf("%d / %d (%d%%)\n", sent, size, 100*sent/size)
+		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
+			sent, size, 100*sent/size, time.Now().Unix() - startTime.Unix())
 	}
 	endTime := time.Now()
 

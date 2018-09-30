@@ -151,7 +151,8 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 			fmt.Printf("err after reading %d bytes: %v\n", received, err)
 			break
 		}
-		fmt.Printf("%d / %d (%d%%)\n", received, size, 100*received/size)
+		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
+			received, size, 100*received/size, time.Now().Unix() - startTime.Unix())
 	}
 	endTime := time.Now()
 

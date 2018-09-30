@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"context"
+
 	"github.com/google/uuid"
 	"github.com/grandcat/zeroconf"
 	"go.uber.org/zap"
@@ -38,15 +40,6 @@ func main() {
 	if err := execute(); err != nil {
 		exitCode = 1
 	}
-}
-
-func createLogger() *zap.Logger {
-	cfg := zap.NewDevelopmentConfig()
-	l, err := cfg.Build()
-	if err != nil {
-		panic(err)
-	}
-	return l
 }
 
 func execute() error {
@@ -114,6 +107,7 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 	fmt.Printf("File size: %s %s ~ %d bytes\n", roughSize, sizeSuffix, filesize)
 
 	if proceed, err := readAndSendProceed(stdin, conn); err != nil {
+		fmt.Printf("Error proceeding: %v\n", err)
 		return err
 	} else if !proceed {
 		return nil
@@ -121,6 +115,7 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 
 	streamCipher, err := setupCrypto(stdin)
 	if err != nil {
+		fmt.Printf("Error setting up crypto: %v\n", err)
 		return err
 	}
 
@@ -140,7 +135,10 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 	tee := io.TeeReader(cipher.StreamReader{S: streamCipher, R: conn}, hash)
 	startTime := time.Now()
 	logger.Debugf("Awaiting bytes at %v. Block size is %d.", startTime, BlockSize)
-	received, err := copyInChunks(file, tee, filesize, BlockSize)
+	received, err := copyInChunks(context.TODO(), file, tee, filesize, BlockSize, func(received uint64) {
+		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
+			received, filesize, 100*received/filesize, time.Now().Unix()-startTime.Unix())
+	})
 	endTime := time.Now()
 	if err != nil {
 		logger.Debugf("Abrupt stop after %d bytes: %v", received, err)
@@ -174,20 +172,10 @@ func readContentLength(conn net.Conn) (uint64, error) {
 	return binary.BigEndian.Uint64(contentLengthBytes[:]), nil
 }
 
-func readFull(conn net.Conn, buf []byte) error {
-	if n, err := io.ReadFull(conn, buf); err != nil {
-		return err
-	} else if n < len(buf) {
-		return fmt.Errorf("received %d bytes but got %d", n, len(buf))
-	}
-	return nil
-}
-
 func readAndSendProceed(stdin *bufio.Reader, conn net.Conn) (bool, error) {
 	fmt.Print("Proceed? (y/n) ")
 	input, err := stdin.ReadString('\n')
 	if err != nil {
-		fmt.Printf("Error reading user input: %v\n", err)
 		return false, fmt.Errorf("read proceed input: %v", err)
 	}
 	input = strings.TrimSpace(input)
@@ -203,7 +191,6 @@ func readAndSendProceed(stdin *bufio.Reader, conn net.Conn) (bool, error) {
 	logger.Debugf("Sending proceed (%v) to remote", response)
 	_, err = io.Copy(conn, bytes.NewBuffer(response[:]))
 	if err != nil {
-		fmt.Printf("Error sending proceed to remote: %v\n", err)
 		return false, fmt.Errorf("send proceed: %v", err)
 	}
 	return proceed, nil
@@ -213,18 +200,15 @@ func setupCrypto(stdin *bufio.Reader) (cipher.Stream, error) {
 	fmt.Print("Decryption key: ")
 	input, err := stdin.ReadString('\n')
 	if err != nil {
-		fmt.Printf("Error reading user input: %v\n", err)
 		return nil, fmt.Errorf("read decryption key: %v\n", err)
 	}
 	key, err := base64.RawStdEncoding.DecodeString(input)
 	if err != nil {
-		fmt.Printf("Error decoding decryption key: %v\n", err)
 		return nil, fmt.Errorf("read decryption key: %v\n", err)
 	}
 
 	blockCipher, err := aes.NewCipher(key)
 	if err != nil {
-		fmt.Printf("Error: %v\n", err)
 		return nil, fmt.Errorf("setup crypto: %v\n", err)
 	}
 

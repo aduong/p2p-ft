@@ -19,9 +19,18 @@ import (
 	"go.uber.org/zap"
 )
 
+var logger *zap.SugaredLogger
+
 func main() {
-	l, _ := zap.NewDevelopment()
-	logger := l.Sugar()
+	exitCode := 0
+	defer func() {
+		if r := recover(); r != nil {
+			panic(r)
+		}
+		os.Exit(exitCode)
+	}()
+
+	logger = createLogger().Sugar()
 	defer logger.Sync()
 
 	if len(os.Args) < 3 {
@@ -32,85 +41,53 @@ func main() {
 	peer := os.Args[1]
 	filepath := os.Args[2]
 
-	file, err := os.Open(filepath)
+	if err := execute(peer, filepath); err != nil {
+		exitCode = 1
+		return
+	}
+}
+
+func execute(peer, filepath string) error {
+	// checking file
+	file, filename, size, err := openFile(filepath)
 	if err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
+		fmt.Printf("Error opening/checking file: %v\n", err)
+		return err
 	}
 
-	stat, err := file.Stat()
+	// resolving peer
+	fmt.Printf("Resolving peer '%s'...", peer)
+	addr, err := resolvePeer(peer)
 	if err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
-	}
-	size := uint64(stat.Size())
-	filename := stat.Name()
-	if len(filename) > 256 {
-		err := fmt.Errorf("filename %q too long", filename)
-		fmt.Printf("err: %v\n", err)
-		return
+		fmt.Printf("Error resolving peer: %v\n", err)
+		return err
 	}
 
-	resolver, err := zeroconf.NewResolver()
-	if err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
-	}
-
-	entriesCh := make(chan *zeroconf.ServiceEntry)
-
-	ctx, _ := context.WithTimeout(context.Background(), 2*time.Second)
-	if err := resolver.Lookup(ctx, peer, P2PServiceType, "", entriesCh); err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
-	}
-
-	fmt.Printf("# resolving peer...\n")
-
-	var service *zeroconf.ServiceEntry
-	select {
-	case <-ctx.Done():
-		fmt.Printf("err: %v\n", ctx.Err())
-		return
-	case entry := <-entriesCh:
-		service = entry
-	}
-
-	fmt.Printf("# resolved peer\n")
-
-	if len(service.AddrIPv4) < 1 {
-		err := fmt.Errorf("service has no IPv4 address")
-		fmt.Printf("err: %v\n", err)
-		return
-	}
-
-	addr := service.AddrIPv4[0]
-
-	fmt.Printf("sending file %s (%d bytes) to peer %s at %v:%v\n", filepath, size, peer, addr, service.Port)
+	fmt.Printf("Send file %s (%d bytes) to peer %s at %v\n", filepath, size, peer, addr)
 
 	// connect
-	conn, err := net.DialTCP("tcp", nil, &net.TCPAddr{IP: addr, Port: service.Port})
+	conn, err := net.DialTCP("tcp", nil, addr)
 	if err != nil {
 		fmt.Printf("err: %v\n", err)
-		return
+		return err
 	}
 	fmt.Printf("# connected\n")
 
 	// send the filename
-	filenameBytes := make([]byte, 256)
-	copy(filenameBytes, []byte(filename))
-	if _, err := io.Copy(conn, bytes.NewBuffer(filenameBytes)); err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
+	var filenameBytes [FilenameSize]byte
+	copy(filenameBytes[:], []byte(filename)) // just in case
+	if _, err := io.Copy(conn, bytes.NewBuffer(filenameBytes[:])); err != nil {
+		fmt.Printf("Error sending file name: %v\n", err)
+		return err
 	}
 	fmt.Printf("# sent filename\n")
 
-	// send the length
+	// send the size
 	var sizeBytes [8]byte
 	binary.BigEndian.PutUint64(sizeBytes[:], size)
 	if _, err := io.Copy(conn, bytes.NewBuffer(sizeBytes[:])); err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
+		fmt.Printf("Error sending file size: %v\n", err)
+		return err
 	}
 	fmt.Printf("# sent length\n")
 
@@ -118,34 +95,28 @@ func main() {
 
 	// receive permission
 	var yn [1]byte
-	if _, err := io.ReadFull(conn, yn[:]); err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
+	if err := readFull(conn, yn[:]); err != nil {
+		fmt.Printf("Error reading peer's response to proceed: %v\n", err)
+		return fmt.Errorf("read proceed: %v", err)
 	}
 
 	if yn[0] != 1 {
 		fmt.Printf("transfer denied\n")
-		return
+		return fmt.Errorf("transfer denied")
 	}
 	fmt.Printf("transfer accepted\n")
 
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
-	}
-	fmt.Printf("shared key is %s\n", base64.RawStdEncoding.EncodeToString(key))
-	blockCipher, err := aes.NewCipher(key)
+	streamCipher, key, err := setupCrypto()
 	if err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
+		fmt.Printf("Error setting up crypto: %v", err)
+		return err
 	}
-	streamCipher := cipher.NewCTR(blockCipher, make([]byte, aes.BlockSize))
+	fmt.Printf("Shared key is %s\n", key)
 
-	fmt.Printf("waiting for signal to start...\n")
+	fmt.Printf("Waiting for remote to start transfer...\n")
 	if _, err := io.ReadFull(conn, yn[:]); err != nil {
 		fmt.Printf("err: %v\n", err)
-		return
+		return err
 	}
 
 	// send data
@@ -154,13 +125,88 @@ func main() {
 	encryptedConn := cipher.StreamWriter{S: streamCipher, W: conn}
 	startTime := time.Now()
 	logger.Debugf("Transferring bytes starting at %v. Block size is %d.", startTime, BlockSize)
-	sent, err := copyInChunks(encryptedConn, tee, size, BlockSize)
+	sent, err := copyInChunks(context.TODO(), encryptedConn, tee, size, BlockSize, func(sent uint64) {
+		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
+			sent, size, 100*sent/size, time.Now().Unix()-startTime.Unix())
+	})
 	endTime := time.Now()
 	if err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
+		fmt.Printf("Error sending file: %v\n", err)
+		return fmt.Errorf("send: %v", err)
 	}
 
 	fmt.Printf("Done sending. SHA256: %x\n", hash.Sum(nil))
 	fmt.Printf("Sent %d bytes in %d seconds\n", sent, endTime.Unix()-startTime.Unix())
+	return nil
+}
+
+func openFile(path string) (*os.File, string, uint64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("check file: %v", err)
+	}
+
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("check file: %v", err)
+	}
+	filename := stat.Name()
+	if len(filename) > 256 {
+		return nil, "", 0, fmt.Errorf("check file: filename %q too long", filename)
+	}
+	return file, filename, uint64(stat.Size()), nil
+}
+
+func resolvePeer(peer string) (*net.TCPAddr, error) {
+	errf := func(err error) error {
+		return fmt.Errorf("resolve peer: %v", err)
+	}
+
+	resolver, err := zeroconf.NewResolver()
+	if err != nil {
+		return nil, errf(err)
+	}
+
+	entriesCh := make(chan *zeroconf.ServiceEntry)
+
+	timeout := 2 * time.Second
+	logger.Debugf("Looking up service %s of type %s with timeout %v", peer, P2PServiceType, timeout)
+
+	ctx, _ := context.WithTimeout(context.Background(), timeout)
+	if err := resolver.Lookup(ctx, peer, P2PServiceType, "", entriesCh); err != nil {
+		return nil, errf(err)
+	}
+
+	var service *zeroconf.ServiceEntry
+	select {
+	case <-ctx.Done():
+		err := ctx.Err()
+		logger.Debugf("Timeout: %v", err)
+		return nil, errf(err)
+	case entry := <-entriesCh:
+		logger.Debugf("Received a service entry: %v", entry)
+		service = entry
+	}
+
+	if len(service.AddrIPv4) < 1 {
+		return nil, errf(fmt.Errorf("service has no IPv4 address"))
+	}
+
+	addr := service.AddrIPv4[0]
+
+	return &net.TCPAddr{IP: addr, Port: service.Port}, nil
+}
+
+func setupCrypto() (cipher.Stream, string, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, "", fmt.Errorf("setup crypto: %v", err)
+	}
+	blockCipher, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, "", fmt.Errorf("setup crypto: %v", err)
+	}
+	return cipher.NewCTR(blockCipher, make([]byte, aes.BlockSize)),
+		base64.RawStdEncoding.EncodeToString(key),
+		nil
 }

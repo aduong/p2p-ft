@@ -2,8 +2,12 @@ package main
 
 import (
 	"fmt"
-	"time"
 	"io"
+	"net"
+
+	"context"
+
+	"go.uber.org/zap"
 )
 
 const BlockSize uint64 = 1024 * 1024 // 1 MB
@@ -19,7 +23,7 @@ func prettySize(x uint64) (string, string) {
 	mx := uint64(0)
 	for x > 1024 && i < len(suffixes) {
 		i++
-		x, mx = x / 1024, x % 1024
+		x, mx = x/1024, x%1024
 	}
 
 	if mx >= 512 {
@@ -28,21 +32,44 @@ func prettySize(x uint64) (string, string) {
 	return fmt.Sprintf("%d", x), suffixes[i]
 }
 
-func copyInChunks(dst io.Writer, src io.Reader, filesize uint64, blocksize uint64) (uint64, error) {
-	received := uint64(0)
-	startTime := time.Now()
-	for received < filesize {
-		block := blocksize
-		if filesize-received < blocksize {
-			block = filesize - received
-		}
-		n, err := io.CopyN(dst, src, int64(block))
-		received += uint64(n)
-		if err != nil {
-			return received, err
-		}
-		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
-			received, filesize, 100*received/filesize, time.Now().Unix()-startTime.Unix())
+func readFull(conn net.Conn, buf []byte) error {
+	if n, err := io.ReadFull(conn, buf); err != nil {
+		return err
+	} else if n < len(buf) {
+		return fmt.Errorf("received %d bytes but got %d", n, len(buf))
 	}
-	return filesize, nil
+	return nil
+}
+
+func copyInChunks(ctx context.Context, dst io.Writer, src io.Reader, total uint64, blocksize uint64, hook func(transferred uint64)) (uint64, error) {
+	transferred := uint64(0)
+	for transferred < total {
+		select {
+		case <-ctx.Done():
+			return transferred, ctx.Err()
+		}
+
+		block := blocksize
+		if total-transferred < blocksize {
+			block = total - transferred
+		}
+
+		n, err := io.CopyN(dst, src, int64(block))
+		transferred += uint64(n)
+		if err != nil {
+			return transferred, err
+		}
+
+		hook(transferred)
+	}
+	return transferred, nil
+}
+
+func createLogger() *zap.Logger {
+	cfg := zap.NewDevelopmentConfig()
+	l, err := cfg.Build()
+	if err != nil {
+		panic(err)
+	}
+	return l
 }

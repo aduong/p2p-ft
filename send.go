@@ -16,9 +16,14 @@ import (
 	"time"
 
 	"github.com/grandcat/zeroconf"
+	"go.uber.org/zap"
 )
 
 func main() {
+	l, _ := zap.NewDevelopment()
+	logger := l.Sugar()
+	defer logger.Sync()
+
 	if len(os.Args) < 3 {
 		fmt.Printf("Usage: %s PEER FILE\n", os.Args[0])
 		return
@@ -146,24 +151,15 @@ func main() {
 	// send data
 	hash := sha256.New()
 	tee := io.TeeReader(file, hash)
-	sent := uint64(0)
 	encryptedConn := cipher.StreamWriter{S: streamCipher, W: conn}
 	startTime := time.Now()
-	for sent < size {
-		block := BlockSize
-		if size-sent < BlockSize {
-			block = size - sent
-		}
-		n, err := io.CopyN(encryptedConn, tee, int64(block))
-		sent += uint64(n)
-		if err != nil {
-			fmt.Printf("err after sending %d bytes: %v\n", sent, err)
-			return
-		}
-		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
-			sent, size, 100*sent/size, time.Now().Unix() - startTime.Unix())
-	}
+	logger.Debugf("Transferring bytes starting at %v. Block size is %d.", startTime, BlockSize)
+	sent, err := copyInChunks(encryptedConn, tee, size, BlockSize)
 	endTime := time.Now()
+	if err != nil {
+		fmt.Printf("err: %v\n", err)
+		return
+	}
 
 	fmt.Printf("Done sending. SHA256: %x\n", hash.Sum(nil))
 	fmt.Printf("Sent %d bytes in %d seconds\n", sent, endTime.Unix()-startTime.Unix())

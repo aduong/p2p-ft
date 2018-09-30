@@ -1,6 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+	"io"
+)
 
 const BlockSize uint64 = 1024 * 1024 // 1 MB
 const P2PServiceType = "_adrp2p._tcp"
@@ -22,4 +26,23 @@ func prettySize(x uint64) (string, string) {
 		x += 1
 	}
 	return fmt.Sprintf("%d", x), suffixes[i]
+}
+
+func copyInChunks(dst io.Writer, src io.Reader, filesize uint64, blocksize uint64) (uint64, error) {
+	received := uint64(0)
+	startTime := time.Now()
+	for received < filesize {
+		block := blocksize
+		if filesize-received < blocksize {
+			block = filesize - received
+		}
+		n, err := io.CopyN(dst, src, int64(block))
+		received += uint64(n)
+		if err != nil {
+			return received, err
+		}
+		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
+			received, filesize, 100*received/filesize, time.Now().Unix()-startTime.Unix())
+	}
+	return filesize, nil
 }

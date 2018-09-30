@@ -167,24 +167,15 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 
 	hash := sha256.New()
 	tee := io.TeeReader(cipher.StreamReader{S: streamCipher, R: conn}, hash)
-	received := uint64(0)
 	startTime := time.Now()
 	logger.Debugf("Awaiting bytes at %v. Block size is %d.", startTime, BlockSize)
-	for received < filesize {
-		block := BlockSize
-		if filesize-received < BlockSize {
-			block = filesize - received
-		}
-		n, err := io.CopyN(file, tee, int64(block))
-		received += uint64(n)
-		if err != nil {
-			fmt.Printf("err after reading %d bytes: %v\n", received, err)
-			break
-		}
-		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
-			received, filesize, 100*received/filesize, time.Now().Unix()-startTime.Unix())
-	}
+	received, err := copyInChunks(file, tee, filesize, BlockSize)
 	endTime := time.Now()
+	if err != nil {
+		logger.Debugf("Abrupt stop after %d bytes: %v", received, err)
+		fmt.Printf("Error receiving file: %v\n", err)
+		return fmt.Errorf("receive: %v", err)
+	}
 
 	fmt.Printf("Done receiving. SHA256: %x\n", hash.Sum(nil))
 	fmt.Printf("Received %d bytes in %d seconds\n", received, endTime.Unix()-startTime.Unix())

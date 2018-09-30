@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"bufio"
@@ -19,32 +19,36 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/grandcat/zeroconf"
-	"go.uber.org/zap"
+	"github.com/spf13/cobra"
 
 	"github.com/aduong/p2p-ft/common"
 	io2 "github.com/aduong/p2p-ft/io"
 )
 
-var logger *zap.SugaredLogger
-
-func main() {
-	exitCode := 0
-	defer func() {
-		if r := recover(); r != nil {
-			panic(r)
-		}
-		os.Exit(exitCode)
-	}()
-
-	logger = common.CreateLogger().Sugar()
-	defer logger.Sync()
-
-	if err := execute(); err != nil {
-		exitCode = 1
-	}
+func init() {
+	rootCmd.AddCommand(receiveCmd)
+	//receiveCmd.Flags().StringVarP(&Source, "source", "s", "", "Source directory to read from")
 }
 
-func execute() error {
+var receiveCmd = &cobra.Command{
+	Use:   "receive",
+	Short: "Start receiving files from peers",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var serviceName string
+		if len(args) > 0 {
+			serviceName = args[0]
+		}
+		return receiver{serviceName}.receive()
+	},
+}
+
+type receiver struct {
+	serviceName string
+}
+
+func (r receiver) receive() error {
+	serviceName := r.serviceName
+
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{})
 	if err != nil {
 		fmt.Printf("Couldn't start TCP listener: %v\n", err)
@@ -53,10 +57,7 @@ func execute() error {
 	defer listener.Close()
 	localAddr := listener.Addr().(*net.TCPAddr)
 
-	var serviceName string
-	if len(os.Args) > 1 && os.Args[1] != "" {
-		serviceName = os.Args[1]
-	} else {
+	if serviceName == "" {
 		id, _ := uuid.NewUUID()
 		serviceName = id.String()
 	}
@@ -83,16 +84,21 @@ func execute() error {
 		}
 		logger.Debugf("Accepted connection from %v", conn.RemoteAddr())
 		fmt.Println("Incoming file")
-		handleConn(conn, stdin)
+		connHandler{conn, stdin}.handle()
 		fmt.Println("Done handling request")
 	}
 }
 
-func handleConn(conn net.Conn, stdin *bufio.Reader) error {
-	defer conn.Close()
+type connHandler struct {
+	conn  net.Conn
+	stdin *bufio.Reader
+}
+
+func (h connHandler) handle() error {
+	defer h.conn.Close()
 
 	logger.Debug("reading file name...")
-	filename, err := readFilename(conn)
+	filename, err := h.readFilename()
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return err
@@ -100,7 +106,7 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 	fmt.Printf("File name: '%s'\n", filename)
 
 	logger.Debug("reading file size")
-	filesize, err := readContentLength(conn)
+	filesize, err := h.readContentLength()
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return err
@@ -108,14 +114,14 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 	roughSize, sizeSuffix := common.PrettySize(filesize)
 	fmt.Printf("File size: %s %s ~ %d bytes\n", roughSize, sizeSuffix, filesize)
 
-	if proceed, err := readAndSendProceed(stdin, conn); err != nil {
+	if proceed, err := h.readAndSendProceed(); err != nil {
 		fmt.Printf("Error proceeding: %v\n", err)
 		return err
 	} else if !proceed {
 		return nil
 	}
 
-	streamCipher, err := setupCrypto(stdin)
+	streamCipher, err := h.setupCrypto()
 	if err != nil {
 		fmt.Printf("Error setting up crypto: %v\n", err)
 		return err
@@ -128,13 +134,13 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 	}
 
 	logger.Debug("Initiating transfer with remote...")
-	if _, err := io.Copy(conn, bytes.NewBuffer([]byte{1})); err != nil {
+	if _, err := io.Copy(h.conn, bytes.NewBuffer([]byte{1})); err != nil {
 		fmt.Printf("Error initiating transfer: %v\n", err)
 		return fmt.Errorf("send proceed: %v\n", err)
 	}
 
 	hash := sha256.New()
-	tee := io.TeeReader(cipher.StreamReader{S: streamCipher, R: conn}, hash)
+	tee := io.TeeReader(cipher.StreamReader{S: streamCipher, R: h.conn}, hash)
 	startTime := time.Now()
 	logger.Debugf("Awaiting bytes at %v. Block size is %d.", startTime, common.BlockSize)
 	received, err := io2.CopyInChunks(context.TODO(), file, tee, filesize, common.BlockSize, func(received uint64) {
@@ -153,9 +159,9 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 	return nil
 }
 
-func readFilename(conn net.Conn) (string, error) {
+func (h connHandler) readFilename() (string, error) {
 	var filenameBytes [common.FilenameSize]byte
-	if err := io2.ReadFull(conn, filenameBytes[:]); err != nil {
+	if err := io2.ReadFull(h.conn, filenameBytes[:]); err != nil {
 		return "", fmt.Errorf("read filename: %v", err)
 	}
 	filename := strings.TrimRight(string(filenameBytes[:]), "\x00")
@@ -166,17 +172,17 @@ func readFilename(conn net.Conn) (string, error) {
 	return filename, nil
 }
 
-func readContentLength(conn net.Conn) (uint64, error) {
+func (h connHandler) readContentLength() (uint64, error) {
 	var contentLengthBytes [common.ContentLengthSize]byte
-	if err := io2.ReadFull(conn, contentLengthBytes[:]); err != nil {
+	if err := io2.ReadFull(h.conn, contentLengthBytes[:]); err != nil {
 		return 0, fmt.Errorf("read content length: %v", err)
 	}
 	return binary.BigEndian.Uint64(contentLengthBytes[:]), nil
 }
 
-func readAndSendProceed(stdin *bufio.Reader, conn net.Conn) (bool, error) {
+func (h connHandler) readAndSendProceed() (bool, error) {
 	fmt.Print("Proceed? (y/n) ")
-	input, err := stdin.ReadString('\n')
+	input, err := h.stdin.ReadString('\n')
 	if err != nil {
 		return false, fmt.Errorf("read proceed input: %v", err)
 	}
@@ -191,16 +197,16 @@ func readAndSendProceed(stdin *bufio.Reader, conn net.Conn) (bool, error) {
 		response[0] = 0
 	}
 	logger.Debugf("Sending proceed (%v) to remote", response)
-	_, err = io.Copy(conn, bytes.NewBuffer(response[:]))
+	_, err = io.Copy(h.conn, bytes.NewBuffer(response[:]))
 	if err != nil {
 		return false, fmt.Errorf("send proceed: %v", err)
 	}
 	return proceed, nil
 }
 
-func setupCrypto(stdin *bufio.Reader) (cipher.Stream, error) {
+func (h connHandler) setupCrypto() (cipher.Stream, error) {
 	fmt.Print("Decryption key: ")
-	input, err := stdin.ReadString('\n')
+	input, err := h.stdin.ReadString('\n')
 	if err != nil {
 		return nil, fmt.Errorf("read decryption key: %v\n", err)
 	}

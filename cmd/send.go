@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"bytes"
@@ -16,41 +16,34 @@ import (
 	"time"
 
 	"github.com/grandcat/zeroconf"
-	"go.uber.org/zap"
+	"github.com/spf13/cobra"
 
 	"github.com/aduong/p2p-ft/common"
 	io2 "github.com/aduong/p2p-ft/io"
 )
 
-var logger *zap.SugaredLogger
-
-func main() {
-	exitCode := 0
-	defer func() {
-		if r := recover(); r != nil {
-			panic(r)
-		}
-		os.Exit(exitCode)
-	}()
-
-	logger = common.CreateLogger().Sugar()
-	defer logger.Sync()
-
-	if len(os.Args) < 3 {
-		fmt.Printf("Usage: %s PEER FILE\n", os.Args[0])
-		return
-	}
-
-	peer := os.Args[1]
-	filepath := os.Args[2]
-
-	if err := execute(peer, filepath); err != nil {
-		exitCode = 1
-		return
-	}
+func init() {
+	rootCmd.AddCommand(sendCmd)
 }
 
-func execute(peer, filepath string) error {
+var sendCmd = &cobra.Command{
+	Use:   "send PEER FILE",
+	Short: "Send a file to a peer",
+	Args: func(cmd *cobra.Command, args []string) error {
+		if err := cobra.ExactArgs(2)(cmd, args); err != nil {
+			return err
+		}
+		return nil
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) < 2 {
+			return fmt.Errorf("not enough arguments")
+		}
+		return send(args[0], args[1])
+	},
+}
+
+func send(peer, filepath string) error {
 	// checking file
 	file, filename, size, err := openFile(filepath)
 	if err != nil {
@@ -109,7 +102,7 @@ func execute(peer, filepath string) error {
 	}
 	fmt.Printf("transfer accepted\n")
 
-	streamCipher, key, err := setupCrypto()
+	streamCipher, key, err := createStream()
 	if err != nil {
 		fmt.Printf("Error setting up crypto: %v", err)
 		return err
@@ -200,7 +193,7 @@ func resolvePeer(peer string) (*net.TCPAddr, error) {
 	return &net.TCPAddr{IP: addr, Port: service.Port}, nil
 }
 
-func setupCrypto() (cipher.Stream, string, error) {
+func createStream() (cipher.Stream, string, error) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return nil, "", fmt.Errorf("setup crypto: %v", err)

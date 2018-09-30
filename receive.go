@@ -2,20 +2,21 @@ package main
 
 import (
 	"bufio"
-	"fmt"
-	"net"
-	"os"
-	"github.com/google/uuid"
-	"github.com/grandcat/zeroconf"
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"io"
-	"bytes"
 	"crypto/sha256"
-	"time"
-	"strings"
-	"encoding/binary"
 	"encoding/base64"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/grandcat/zeroconf"
 )
 
 func main() {

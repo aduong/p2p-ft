@@ -47,6 +47,7 @@ func copyInChunks(ctx context.Context, dst io.Writer, src io.Reader, total uint6
 		select {
 		case <-ctx.Done():
 			return transferred, ctx.Err()
+		default:
 		}
 
 		block := blocksize

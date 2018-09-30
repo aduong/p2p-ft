@@ -21,18 +21,24 @@ import (
 	"github.com/grandcat/zeroconf"
 	"github.com/spf13/cobra"
 
+	"path"
+
 	"github.com/aduong/p2p-ft/common"
 	io2 "github.com/aduong/p2p-ft/io"
 )
 
+var receiveDir string
+
 func init() {
 	rootCmd.AddCommand(receiveCmd)
-	//receiveCmd.Flags().StringVarP(&Source, "source", "s", "", "Source directory to read from")
+	receiveCmd.Flags().StringVarP(
+		&receiveDir, "receive-dir", "d", "received", "Directory to store received files")
 }
 
 var receiveCmd = &cobra.Command{
-	Use:   "receive",
+	Use:   "receive [NAME]",
 	Short: "Start receiving files from peers",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var serviceName string
 		if len(args) > 0 {
@@ -47,6 +53,11 @@ type receiver struct {
 }
 
 func (r receiver) receive() error {
+	if err := os.MkdirAll(receiveDir, 0700); err != nil {
+		fmt.Printf("Couldn't create receive directory: %v\n", err)
+		return fmt.Errorf("create receive dir: %v", err)
+	}
+
 	serviceName := r.serviceName
 
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{})
@@ -127,7 +138,7 @@ func (h connHandler) handle() error {
 		return err
 	}
 
-	file, err := os.Create(string(filename))
+	file, err := os.Create(path.Join(receiveDir, string(filename)))
 	if err != nil {
 		fmt.Printf("Error opening file: %v\n", err)
 		return err

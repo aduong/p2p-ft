@@ -6,7 +6,7 @@ clean:
 	rm -f send receive
 
 send:
-	go build ./send.go ./common.go
+	go build ./send.go
 
 receive:
-	go build ./receive.go ./common.go
+	go build ./receive.go

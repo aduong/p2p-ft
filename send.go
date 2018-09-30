@@ -17,6 +17,9 @@ import (
 
 	"github.com/grandcat/zeroconf"
 	"go.uber.org/zap"
+
+	"github.com/aduong/p2p-ft/common"
+	io2 "github.com/aduong/p2p-ft/io"
 )
 
 var logger *zap.SugaredLogger
@@ -30,7 +33,7 @@ func main() {
 		os.Exit(exitCode)
 	}()
 
-	logger = createLogger().Sugar()
+	logger = common.CreateLogger().Sugar()
 	defer logger.Sync()
 
 	if len(os.Args) < 3 {
@@ -74,7 +77,7 @@ func execute(peer, filepath string) error {
 	fmt.Printf("# connected\n")
 
 	// send the filename
-	var filenameBytes [FilenameSize]byte
+	var filenameBytes [common.FilenameSize]byte
 	copy(filenameBytes[:], []byte(filename)) // just in case
 	if _, err := io.Copy(conn, bytes.NewBuffer(filenameBytes[:])); err != nil {
 		fmt.Printf("Error sending file name: %v\n", err)
@@ -95,7 +98,7 @@ func execute(peer, filepath string) error {
 
 	// receive permission
 	var yn [1]byte
-	if err := readFull(conn, yn[:]); err != nil {
+	if err := io2.ReadFull(conn, yn[:]); err != nil {
 		fmt.Printf("Error reading peer's response to proceed: %v\n", err)
 		return fmt.Errorf("read proceed: %v", err)
 	}
@@ -124,8 +127,8 @@ func execute(peer, filepath string) error {
 	tee := io.TeeReader(file, hash)
 	encryptedConn := cipher.StreamWriter{S: streamCipher, W: conn}
 	startTime := time.Now()
-	logger.Debugf("Transferring bytes starting at %v. Block size is %d.", startTime, BlockSize)
-	sent, err := copyInChunks(context.TODO(), encryptedConn, tee, size, BlockSize, func(sent uint64) {
+	logger.Debugf("Transferring bytes starting at %v. Block size is %d.", startTime, common.BlockSize)
+	sent, err := io2.CopyInChunks(context.TODO(), encryptedConn, tee, size, common.BlockSize, func(sent uint64) {
 		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
 			sent, size, 100*sent/size, time.Now().Unix()-startTime.Unix())
 	})
@@ -170,10 +173,10 @@ func resolvePeer(peer string) (*net.TCPAddr, error) {
 	entriesCh := make(chan *zeroconf.ServiceEntry)
 
 	timeout := 2 * time.Second
-	logger.Debugf("Looking up service %s of type %s with timeout %v", peer, P2PServiceType, timeout)
+	logger.Debugf("Looking up service %s of type %s with timeout %v", peer, common.P2PServiceType, timeout)
 
 	ctx, _ := context.WithTimeout(context.Background(), timeout)
-	if err := resolver.Lookup(ctx, peer, P2PServiceType, "", entriesCh); err != nil {
+	if err := resolver.Lookup(ctx, peer, common.P2PServiceType, "", entriesCh); err != nil {
 		return nil, errf(err)
 	}
 

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha256"
@@ -16,11 +17,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"context"
-
 	"github.com/google/uuid"
 	"github.com/grandcat/zeroconf"
 	"go.uber.org/zap"
+
+	"github.com/aduong/p2p-ft/common"
+	io2 "github.com/aduong/p2p-ft/io"
 )
 
 var logger *zap.SugaredLogger
@@ -34,7 +36,7 @@ func main() {
 		os.Exit(exitCode)
 	}()
 
-	logger = createLogger().Sugar()
+	logger = common.CreateLogger().Sugar()
 	defer logger.Sync()
 
 	if err := execute(); err != nil {
@@ -60,8 +62,8 @@ func execute() error {
 	}
 
 	logger.Debugf("Registering service %s for type %s with zeroconf at port %d",
-		serviceName, P2PServiceType, localAddr.Port)
-	server, err := zeroconf.Register(serviceName, P2PServiceType, "local.", localAddr.Port, nil, nil)
+		serviceName, common.P2PServiceType, localAddr.Port)
+	server, err := zeroconf.Register(serviceName, common.P2PServiceType, "local.", localAddr.Port, nil, nil)
 	if err != nil {
 		fmt.Printf("Couldn't register file transfer service: %v\n", err)
 		return err
@@ -103,7 +105,7 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 		fmt.Printf("Error: %v\n", err)
 		return err
 	}
-	roughSize, sizeSuffix := prettySize(filesize)
+	roughSize, sizeSuffix := common.PrettySize(filesize)
 	fmt.Printf("File size: %s %s ~ %d bytes\n", roughSize, sizeSuffix, filesize)
 
 	if proceed, err := readAndSendProceed(stdin, conn); err != nil {
@@ -134,8 +136,8 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 	hash := sha256.New()
 	tee := io.TeeReader(cipher.StreamReader{S: streamCipher, R: conn}, hash)
 	startTime := time.Now()
-	logger.Debugf("Awaiting bytes at %v. Block size is %d.", startTime, BlockSize)
-	received, err := copyInChunks(context.TODO(), file, tee, filesize, BlockSize, func(received uint64) {
+	logger.Debugf("Awaiting bytes at %v. Block size is %d.", startTime, common.BlockSize)
+	received, err := io2.CopyInChunks(context.TODO(), file, tee, filesize, common.BlockSize, func(received uint64) {
 		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
 			received, filesize, 100*received/filesize, time.Now().Unix()-startTime.Unix())
 	})
@@ -152,8 +154,8 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 }
 
 func readFilename(conn net.Conn) (string, error) {
-	var filenameBytes [FilenameSize]byte
-	if err := readFull(conn, filenameBytes[:]); err != nil {
+	var filenameBytes [common.FilenameSize]byte
+	if err := io2.ReadFull(conn, filenameBytes[:]); err != nil {
 		return "", fmt.Errorf("read filename: %v", err)
 	}
 	filename := strings.TrimRight(string(filenameBytes[:]), "\x00")
@@ -165,8 +167,8 @@ func readFilename(conn net.Conn) (string, error) {
 }
 
 func readContentLength(conn net.Conn) (uint64, error) {
-	var contentLengthBytes [ContentLengthSize]byte
-	if err := readFull(conn, contentLengthBytes[:]); err != nil {
+	var contentLengthBytes [common.ContentLengthSize]byte
+	if err := io2.ReadFull(conn, contentLengthBytes[:]); err != nil {
 		return 0, fmt.Errorf("read content length: %v", err)
 	}
 	return binary.BigEndian.Uint64(contentLengthBytes[:]), nil

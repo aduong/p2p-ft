@@ -118,13 +118,7 @@ func main() {
 			continue
 		}
 
-		iv := make([]byte, aes.BlockSize)
-		if _, err := io.ReadFull(conn, iv); err != nil {
-			fmt.Printf("err: %v\n", err)
-			continue
-		}
-
-		streamCipher := cipher.NewCTR(blockCipher, iv)
+		streamCipher := cipher.NewCTR(blockCipher, make([]byte, aes.BlockSize))
 
 		file, err := os.Create(string(filename))
 		if err != nil {

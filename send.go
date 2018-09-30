@@ -124,17 +124,6 @@ func main() {
 	}
 	fmt.Printf("transfer accepted\n")
 
-	// send IV
-	iv := make([]byte, aes.BlockSize)
-	if _, err := rand.Read(iv); err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
-	}
-	if _, err := io.Copy(conn, bytes.NewBuffer(iv)); err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
-	}
-
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		fmt.Printf("err: %v\n", err)
@@ -146,7 +135,7 @@ func main() {
 		fmt.Printf("err: %v\n", err)
 		return
 	}
-	streamCipher := cipher.NewCTR(blockCipher, iv)
+	streamCipher := cipher.NewCTR(blockCipher, make([]byte, aes.BlockSize))
 
 	fmt.Printf("waiting for signal to start...\n")
 	if _, err := io.ReadFull(conn, yn[:]); err != nil {

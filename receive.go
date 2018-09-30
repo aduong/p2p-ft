@@ -19,8 +19,6 @@ import (
 	"github.com/grandcat/zeroconf"
 )
 
-const BlockSize uint64 = 1024 * 1024 // 1 MB
-
 func main() {
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{})
 	if err != nil {

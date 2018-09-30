@@ -18,8 +18,6 @@ import (
 	"github.com/grandcat/zeroconf"
 )
 
-const BlockSize uint64 = 1024 * 1024 // 1 MB
-
 func main() {
 	if len(os.Args) < 3 {
 		fmt.Printf("Usage: %s PEER FILE\n", os.Args[0])

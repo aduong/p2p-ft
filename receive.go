@@ -132,6 +132,9 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 		fmt.Printf("Error sending proceed to remote: %v\n", err)
 		return fmt.Errorf("send proceed: %v", err)
 	}
+	if input != "y" {
+		return nil
+	}
 
 	fmt.Print("Decryption key: ")
 	input, err = stdin.ReadString('\n')

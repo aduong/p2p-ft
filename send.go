@@ -20,7 +20,7 @@ import (
 
 const BlockSize uint64 = 1024 * 1024 // 1 MB
 
-func main () {
+func main() {
 	if len(os.Args) < 3 {
 		fmt.Printf("Usage: %s PEER FILE\n", os.Args[0])
 		return
@@ -34,7 +34,6 @@ func main () {
 		fmt.Printf("err: %v\n", err)
 		return
 	}
-
 
 	stat, err := file.Stat()
 	if err != nil {
@@ -57,7 +56,7 @@ func main () {
 
 	entriesCh := make(chan *zeroconf.ServiceEntry)
 
-	ctx, _  := context.WithTimeout(context.Background(), 2 * time.Second)
+	ctx, _ := context.WithTimeout(context.Background(), 2*time.Second)
 	if err := resolver.Lookup(ctx, peer, P2PServiceType, "", entriesCh); err != nil {
 		fmt.Printf("err: %v\n", err)
 		return
@@ -87,7 +86,7 @@ func main () {
 	fmt.Printf("sending file %s (%d bytes) to peer %s at %v:%v\n", filepath, size, peer, addr, service.Port)
 
 	// connect
-	conn, err := net.DialTCP("tcp", nil, &net.TCPAddr{IP: addr, Port:service.Port})
+	conn, err := net.DialTCP("tcp", nil, &net.TCPAddr{IP: addr, Port: service.Port})
 	if err != nil {
 		fmt.Printf("err: %v\n", err)
 		return
@@ -165,7 +164,7 @@ func main () {
 	startTime := time.Now()
 	for sent < size {
 		block := BlockSize
-		if size - sent < BlockSize {
+		if size-sent < BlockSize {
 			block = size - sent
 		}
 		n, err := io.CopyN(encryptedConn, tee, int64(block))
@@ -179,5 +178,5 @@ func main () {
 	endTime := time.Now()
 
 	fmt.Printf("Done sending. SHA256: %x\n", hash.Sum(nil))
-	fmt.Printf("Sent %d bytes in %d seconds\n", sent, endTime.Unix() - startTime.Unix())
+	fmt.Printf("Sent %d bytes in %d seconds\n", sent, endTime.Unix()-startTime.Unix())
 }

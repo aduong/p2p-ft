@@ -21,7 +21,7 @@ import (
 
 const BlockSize uint64 = 1024 * 1024 // 1 MB
 
-func main () {
+func main() {
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{})
 	if err != nil {
 		fmt.Printf("err: %v\n", err)
@@ -146,7 +146,7 @@ func main () {
 		startTime := time.Now()
 		for received < size {
 			block := BlockSize
-			if size - received < BlockSize {
+			if size-received < BlockSize {
 				block = size - received
 			}
 			n, err := io.CopyN(file, tee, int64(block))
@@ -160,6 +160,6 @@ func main () {
 		endTime := time.Now()
 
 		fmt.Printf("Done receiving. SHA256: %x\n", hash.Sum(nil))
-		fmt.Printf("Received %d bytes in %d seconds\n", received, endTime.Unix() - startTime.Unix())
+		fmt.Printf("Received %d bytes in %d seconds\n", received, endTime.Unix()-startTime.Unix())
 	}
 }

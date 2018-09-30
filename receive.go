@@ -14,16 +14,46 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/grandcat/zeroconf"
+	"go.uber.org/zap"
 )
 
+var logger *zap.SugaredLogger
+
 func main() {
+	exitCode := 0
+	defer func() {
+		if r := recover(); r != nil {
+			panic(r)
+		}
+		os.Exit(exitCode)
+	}()
+
+	logger = createLogger().Sugar()
+	defer logger.Sync()
+
+	if err := execute(); err != nil {
+		exitCode = 1
+	}
+}
+
+func createLogger() *zap.Logger {
+	cfg := zap.NewDevelopmentConfig()
+	l, err := cfg.Build()
+	if err != nil {
+		panic(err)
+	}
+	return l
+}
+
+func execute() error {
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{})
 	if err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
+		fmt.Printf("Couldn't start TCP listener: %v\n", err)
+		return fmt.Errorf("listen tcp: %v", err)
 	}
 	defer listener.Close()
 	localAddr := listener.Addr().(*net.TCPAddr)
@@ -36,23 +66,28 @@ func main() {
 		serviceName = id.String()
 	}
 
+	logger.Debugf("Registering service %s for type %s with zeroconf at port %d",
+		serviceName, P2PServiceType, localAddr.Port)
 	server, err := zeroconf.Register(serviceName, P2PServiceType, "local.", localAddr.Port, nil, nil)
 	if err != nil {
-		fmt.Printf("err: %v\n", err)
-		return
+		fmt.Printf("Couldn't register file transfer service: %v\n", err)
+		return err
 	}
 	defer server.Shutdown()
 
-	fmt.Printf("Service %s listening at %v\n", serviceName, localAddr)
+	logger.Debugf("Registered service %s at %v", serviceName, localAddr)
+	fmt.Printf("Ready to receive files as %s\n", serviceName)
 
 	stdin := bufio.NewReader(os.Stdin)
 	for {
+		logger.Debugf("Waiting for connections")
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Printf("err: %v\n", err)
-			break
+			fmt.Printf("Couldn't wait for connections: %v\n", err)
+			return fmt.Errorf("listen tcp: %v", err)
 		}
-		fmt.Printf("# accepted connection\n")
+		logger.Debugf("Accepted connection from %v", conn.RemoteAddr())
+		fmt.Println("Incoming file")
 		handleConn(conn, stdin)
 	}
 }
@@ -60,90 +95,85 @@ func main() {
 func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 	defer conn.Close()
 
-	filenameBytes := make([]byte, 256)
-	contentLengthBytes := make([]byte, 8)
-
-	if n, err := io.ReadFull(conn, filenameBytes); err != nil {
-		fmt.Printf("err: %v\n", err)
-		return err
-	} else if n < len(filenameBytes) {
-		err := fmt.Errorf("expected %d bytes", len(filenameBytes))
-		fmt.Printf("err: %v\n", err)
+	logger.Debug("reading file name...")
+	filename, err := readFilename(conn)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
 		return err
 	}
-	filename := strings.TrimRight(string(filenameBytes), "\x00")
-	fmt.Printf("filename=%s\n", filename)
+	fmt.Printf("File name: '%s'\n", filename)
 
-	if n, err := io.ReadFull(conn, contentLengthBytes); err != nil {
-		fmt.Printf("err: %v\n", err)
-		return err
-	} else if n < len(contentLengthBytes) {
-		err := fmt.Errorf("expected %d bytes", len(contentLengthBytes))
-		fmt.Printf("err: %v\n", err)
+	logger.Debug("reading file size")
+	filesize, err := readContentLength(conn)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
 		return err
 	}
-	size := binary.BigEndian.Uint64(contentLengthBytes)
-	fmt.Printf("size=%d\n", size)
+	roughSize, sizeSuffix := prettySize(filesize)
+	fmt.Printf("File size: %s %s ~ %d bytes\n", roughSize, sizeSuffix, filesize)
 
-	fmt.Printf("proceed? (y/n) ")
+	fmt.Print("Proceed? (y/n) ")
 	input, err := stdin.ReadString('\n')
 	if err != nil {
-		fmt.Printf("err: %v\n", err)
-		return err
+		fmt.Printf("Error reading user input: %v\n", err)
+		return fmt.Errorf("read proceed input: %v", err)
+	}
+	input = strings.TrimSpace(input)
+
+	var response [1]byte
+	if input == "y" {
+		response[0] = 1
+	} else {
+		response[0] = 0
+	}
+	logger.Debugf("Sending proceed (%v) to remote", response)
+	_, err = io.Copy(conn, bytes.NewBuffer(response[:]))
+	if err != nil {
+		fmt.Printf("Error sending proceed to remote: %v\n", err)
+		return fmt.Errorf("send proceed: %v", err)
 	}
 
-	if strings.ToLower(strings.TrimSpace(input)) != "y" {
-		if _, err := io.Copy(conn, bytes.NewBuffer([]byte{0})); err != nil {
-			fmt.Printf("err: %v\n", err)
-		}
-		return err
-	}
-
-	if _, err := io.Copy(conn, bytes.NewBuffer([]byte{1})); err != nil {
-		fmt.Printf("err: %v\n", err)
-		return err
-	}
-
-	fmt.Printf("decryption key: ")
+	fmt.Print("Decryption key: ")
 	input, err = stdin.ReadString('\n')
 	if err != nil {
-		fmt.Printf("err: %v\n", err)
-		return err
+		fmt.Printf("Error reading user input: %v\n", err)
+		return fmt.Errorf("read decryption key: %v\n", err)
 	}
 	key, err := base64.RawStdEncoding.DecodeString(input)
 	if err != nil {
-		fmt.Printf("err: %v\n", err)
-		return err
+		fmt.Printf("Error decoding decryption key: %v\n", err)
+		return fmt.Errorf("read decryption key: %v\n", err)
 	}
 
 	blockCipher, err := aes.NewCipher(key)
 	if err != nil {
-		fmt.Printf("err: %v\n", err)
-		return err
+		fmt.Printf("Error: %v\n", err)
+		return fmt.Errorf("setup crypto: %v\n", err)
 	}
 
 	streamCipher := cipher.NewCTR(blockCipher, make([]byte, aes.BlockSize))
 
 	file, err := os.Create(string(filename))
 	if err != nil {
-		fmt.Printf("err: %v\n", err)
+		fmt.Printf("Error opening file: %v\n", err)
 		return err
 	}
 
-	// initiate transfer
+	logger.Debug("Initiating transfer with remote...")
 	if _, err := io.Copy(conn, bytes.NewBuffer([]byte{1})); err != nil {
-		fmt.Printf("err: %v\n", err)
-		return err
+		fmt.Printf("Error initiating transfer: %v\n", err)
+		return fmt.Errorf("send proceed: %v\n", err)
 	}
 
 	hash := sha256.New()
 	tee := io.TeeReader(cipher.StreamReader{S: streamCipher, R: conn}, hash)
 	received := uint64(0)
 	startTime := time.Now()
-	for received < size {
+	logger.Debugf("Awaiting bytes at %v. Block size is %d.", startTime, BlockSize)
+	for received < filesize {
 		block := BlockSize
-		if size-received < BlockSize {
-			block = size - received
+		if filesize-received < BlockSize {
+			block = filesize - received
 		}
 		n, err := io.CopyN(file, tee, int64(block))
 		received += uint64(n)
@@ -152,11 +182,41 @@ func handleConn(conn net.Conn, stdin *bufio.Reader) error {
 			break
 		}
 		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
-			received, size, 100*received/size, time.Now().Unix() - startTime.Unix())
+			received, filesize, 100*received/filesize, time.Now().Unix()-startTime.Unix())
 	}
 	endTime := time.Now()
 
 	fmt.Printf("Done receiving. SHA256: %x\n", hash.Sum(nil))
 	fmt.Printf("Received %d bytes in %d seconds\n", received, endTime.Unix()-startTime.Unix())
+	return nil
+}
+
+func readFilename(conn net.Conn) (string, error) {
+	var filenameBytes [FilenameSize]byte
+	if err := readFull(conn, filenameBytes[:]); err != nil {
+		return "", fmt.Errorf("read filename: %v", err)
+	}
+	filename := strings.TrimRight(string(filenameBytes[:]), "\x00")
+	if !utf8.ValidString(filename) {
+		logger.Debugf("Received invalid filename %q", filename)
+		return "", fmt.Errorf("read filename: received name is not valid padded UTF-8")
+	}
+	return filename, nil
+}
+
+func readContentLength(conn net.Conn) (uint64, error) {
+	var contentLengthBytes [ContentLengthSize]byte
+	if err := readFull(conn, contentLengthBytes[:]); err != nil {
+		return 0, fmt.Errorf("read content length: %v", err)
+	}
+	return binary.BigEndian.Uint64(contentLengthBytes[:]), nil
+}
+
+func readFull(conn net.Conn, buf []byte) error {
+	if n, err := io.ReadFull(conn, buf); err != nil {
+		return err
+	} else if n < len(buf) {
+		return fmt.Errorf("received %d bytes but got %d", n, len(buf))
+	}
 	return nil
 }

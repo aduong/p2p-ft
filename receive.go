@@ -106,7 +106,7 @@ func main() {
 			fmt.Printf("err: %v\n", err)
 			continue
 		}
-		key, err := base64.StdEncoding.DecodeString(input)
+		key, err := base64.RawStdEncoding.DecodeString(input)
 		if err != nil {
 			fmt.Printf("err: %v\n", err)
 			continue

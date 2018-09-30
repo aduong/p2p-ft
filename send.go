@@ -129,7 +129,7 @@ func main() {
 		fmt.Printf("err: %v\n", err)
 		return
 	}
-	fmt.Printf("shared key is %s\n", base64.StdEncoding.EncodeToString(key))
+	fmt.Printf("shared key is %s\n", base64.RawStdEncoding.EncodeToString(key))
 	blockCipher, err := aes.NewCipher(key)
 	if err != nil {
 		fmt.Printf("err: %v\n", err)

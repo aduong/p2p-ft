@@ -1,12 +1,9 @@
 .PHONY: all
-all: send receive
+all: p2p
 
 .PHONY: clean
 clean:
-	rm -f send receive
+	rm -f ./p2p
 
-send:
-	go build ./send.go
-
-receive:
-	go build ./receive.go
+p2p:
+	go build -o p2p ./main.go

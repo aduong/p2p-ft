@@ -8,11 +8,11 @@ import (
 	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"path"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,8 +20,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/grandcat/zeroconf"
 	"github.com/spf13/cobra"
-
-	"path"
 
 	"github.com/aduong/p2p-ft/common"
 	io2 "github.com/aduong/p2p-ft/io"
@@ -117,13 +115,27 @@ func (h connHandler) handle() error {
 	fmt.Printf("File name: '%s'\n", filename)
 
 	logger.Debug("reading file size")
-	filesize, err := h.readContentLength()
+	filesize, err := io2.ReadUInt64(h.conn)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return err
 	}
 	roughSize, sizeSuffix := common.PrettySize(filesize)
 	fmt.Printf("File size: %s %s ~ %d bytes\n", roughSize, sizeSuffix, filesize)
+
+	logger.Debug("Waiting for hash from remote...")
+	hash := [sha256.Size]byte{}
+	if _, err := io.ReadFull(h.conn, hash[:]); err != nil {
+		fmt.Printf("Error receiving file hash: %v\n", err)
+		return err
+	}
+	logger.Debugf("Received file hash is %x", hash)
+	// TODO: use to check if we have this file
+
+	if err := io2.WriteUInt64(h.conn, 0); err != nil {
+		fmt.Printf("Error sending previously received file size back: %v\n", err)
+		return err
+	}
 
 	if proceed, err := h.readAndSendProceed(); err != nil {
 		fmt.Printf("Error proceeding: %v\n", err)
@@ -145,16 +157,14 @@ func (h connHandler) handle() error {
 	}
 
 	logger.Debug("Initiating transfer with remote...")
-	if _, err := io.Copy(h.conn, bytes.NewBuffer([]byte{1})); err != nil {
+	if _, err := io.Copy(h.conn, bytes.NewReader([]byte{1})); err != nil {
 		fmt.Printf("Error initiating transfer: %v\n", err)
 		return fmt.Errorf("send proceed: %v\n", err)
 	}
 
-	hash := sha256.New()
-	tee := io.TeeReader(cipher.StreamReader{S: streamCipher, R: h.conn}, hash)
 	startTime := time.Now()
 	logger.Debugf("Awaiting bytes at %v. Block size is %d.", startTime, common.BlockSize)
-	received, err := io2.CopyInChunks(context.TODO(), file, tee, filesize, common.BlockSize, func(received uint64) {
+	received, err := io2.CopyInChunks(context.TODO(), file, cipher.StreamReader{S: streamCipher, R: h.conn}, filesize, common.BlockSize, func(received uint64) {
 		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
 			received, filesize, 100*received/filesize, time.Now().Unix()-startTime.Unix())
 	})
@@ -165,7 +175,7 @@ func (h connHandler) handle() error {
 		return fmt.Errorf("receive: %v", err)
 	}
 
-	fmt.Printf("Done receiving. SHA256: %x\n", hash.Sum(nil))
+	fmt.Println("Done receiving.")
 	fmt.Printf("Received %d bytes in %d seconds\n", received, endTime.Unix()-startTime.Unix())
 	return nil
 }
@@ -181,14 +191,6 @@ func (h connHandler) readFilename() (string, error) {
 		return "", fmt.Errorf("read filename: received name is not valid padded UTF-8")
 	}
 	return filename, nil
-}
-
-func (h connHandler) readContentLength() (uint64, error) {
-	var contentLengthBytes [common.ContentLengthSize]byte
-	if err := io2.ReadFull(h.conn, contentLengthBytes[:]); err != nil {
-		return 0, fmt.Errorf("read content length: %v", err)
-	}
-	return binary.BigEndian.Uint64(contentLengthBytes[:]), nil
 }
 
 func (h connHandler) readAndSendProceed() (bool, error) {
@@ -208,7 +210,7 @@ func (h connHandler) readAndSendProceed() (bool, error) {
 		response[0] = 0
 	}
 	logger.Debugf("Sending proceed (%v) to remote", response)
-	_, err = io.Copy(h.conn, bytes.NewBuffer(response[:]))
+	_, err = io.Copy(h.conn, bytes.NewReader(response[:]))
 	if err != nil {
 		return false, fmt.Errorf("send proceed: %v", err)
 	}

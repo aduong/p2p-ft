@@ -1,7 +1,9 @@
 package io
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -39,4 +41,21 @@ func CopyInChunks(ctx context.Context, dst io.Writer, src io.Reader, total uint6
 		hook(transferred)
 	}
 	return transferred, nil
+}
+
+func ReadUInt64(r io.Reader) (uint64, error) {
+	buf := new(bytes.Buffer)
+	if _, err := io.CopyN(buf, r, 8); err != nil {
+		return 0, fmt.Errorf("read uint64: %v", err)
+	}
+	return binary.BigEndian.Uint64(buf.Bytes()), nil
+}
+
+func WriteUInt64(w io.Writer, n uint64) error {
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, n)
+	if _, err := io.CopyN(w, bytes.NewReader(buf), 8); err != nil {
+		return fmt.Errorf("write uint64: %v", err)
+	}
+	return nil
 }

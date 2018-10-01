@@ -78,13 +78,12 @@ func send(peer, filepath string) error {
 	}
 
 	// send the size
+	logger.Debugf("Sending file size %d...", size)
 	if err := io2.WriteUInt64(conn, size); err != nil {
 		fmt.Printf("Error sending file size: %v\n", err)
 		return err
 	}
-	fmt.Printf("# sent length\n")
-
-	fmt.Printf("waiting for acceptance...\n")
+	logger.Debug("Sent file size")
 
 	// send hash for resumption
 	fmt.Println("Hashing file...")
@@ -106,6 +105,8 @@ func send(peer, filepath string) error {
 		return err
 	}
 
+	fmt.Printf("Waiting for peer to accept file...\n")
+
 	// receive permission
 	var yn [1]byte
 	if err := io2.ReadFull(conn, yn[:]); err != nil {
@@ -114,6 +115,10 @@ func send(peer, filepath string) error {
 	}
 
 	if yn[0] != 1 {
+		if prevSentSize == size {
+			fmt.Println("File previously received in its entirety")
+			return nil
+		}
 		fmt.Printf("transfer denied\n")
 		return fmt.Errorf("transfer denied")
 	}
@@ -140,7 +145,7 @@ func send(peer, filepath string) error {
 	toSend := size - prevSentSize
 	sent, err := io2.CopyInChunks(context.TODO(), encryptedConn, file, toSend, common.BlockSize, func(sent uint64) {
 		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
-			sent, size, 100*sent/size, time.Now().Unix()-startTime.Unix())
+			sent, size, 100*sent/toSend, time.Now().Unix()-startTime.Unix())
 	})
 	endTime := time.Now()
 	if err != nil {

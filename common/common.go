@@ -36,3 +36,15 @@ func CreateLogger() *zap.Logger {
 	}
 	return l
 }
+
+func EqualBytes(b1, b2 []byte) bool {
+	if len(b1) != len(b2) {
+		return false
+	}
+	for i, _ := range b1 {
+		if b1[i] != b2[i] {
+			return false
+		}
+	}
+	return true
+}

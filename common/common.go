@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 const BlockSize uint64 = 1024 * 1024 // 1 MB
@@ -28,8 +29,13 @@ func PrettySize(x uint64) (string, string) {
 	return fmt.Sprintf("%d", x), suffixes[i]
 }
 
-func CreateLogger() *zap.Logger {
+func CreateLogger(debug bool) *zap.Logger {
 	cfg := zap.NewDevelopmentConfig()
+	if debug {
+		cfg.Level.SetLevel(zapcore.DebugLevel)
+	} else {
+		cfg.Level.SetLevel(zapcore.InfoLevel)
+	}
 	l, err := cfg.Build()
 	if err != nil {
 		panic(err)

@@ -44,6 +44,8 @@ var sendCmd = &cobra.Command{
 func send(peer, filepath string) error {
 	// checking file
 	file, filename, filesize, err := openFile(filepath)
+	defer file.Close()
+
 	if err != nil {
 		fmt.Printf("Error opening/checking file: %v\n", err)
 		return err

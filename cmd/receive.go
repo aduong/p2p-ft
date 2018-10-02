@@ -180,6 +180,7 @@ func (h connHandler) handle() error {
 		path.Join(receiveDir, incompleteFilename),
 		os.O_WRONLY|os.O_APPEND|os.O_CREATE,
 		0666)
+	defer file.Close()
 	if err != nil {
 		fmt.Printf("Error opening file: %v\n", err)
 		return err

@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/aduong/p2p-ft/common"
 	io2 "github.com/aduong/p2p-ft/io"
+	"github.com/aduong/p2p-ft/proto"
 )
 
 func init() {
@@ -43,7 +43,7 @@ var sendCmd = &cobra.Command{
 
 func send(peer, filepath string) error {
 	// checking file
-	file, filename, size, err := openFile(filepath)
+	file, filename, filesize, err := openFile(filepath)
 	if err != nil {
 		fmt.Printf("Error opening/checking file: %v\n", err)
 		return err
@@ -57,7 +57,7 @@ func send(peer, filepath string) error {
 		return err
 	}
 
-	fmt.Printf("Send file %s (%d bytes) to peer %s at %v\n", filepath, size, peer, addr)
+	fmt.Printf("Send file %s (%d bytes) to peer %s at %v\n", filepath, filesize, peer, addr)
 
 	// connect
 	conn, err := net.DialTCP("tcp", nil, addr)
@@ -67,72 +67,58 @@ func send(peer, filepath string) error {
 	}
 	logger.Debugf("Connected to %v", addr)
 
-	// send the filename
-	logger.Debug("Sending file name")
-	var filenameBytes [common.FilenameSize]byte
-	copy(filenameBytes[:], []byte(filename)) // just in case
-	if _, err := io.Copy(conn, bytes.NewReader(filenameBytes[:])); err != nil {
-		fmt.Printf("Error sending file name: %v\n", err)
-		return err
-	}
-
-	// send the size
-	logger.Debugf("Sending file size %d...", size)
-	if err := io2.WriteUInt64(conn, size); err != nil {
-		fmt.Printf("Error sending file size: %v\n", err)
-		return err
-	}
-	logger.Debug("Sent file size")
-
-	// send hash for resumption
 	fmt.Println("Hashing file...")
-	_, err = hashAndSend(file, conn)
+	h, err := hash(file)
 	if err != nil {
-		fmt.Printf("Error hashing and sending file: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return err
 	}
 
-	// receive bytes previously received
-	prevSentSize, err := io2.ReadUInt64(conn)
-	if err != nil {
-		fmt.Printf("Error reading previously sent size: %v\n", err)
+	req := proto.RequestToSend{
+		Filename:      filename,
+		ContentLength: filesize,
+		SHA256sum:     h,
+	}
+
+	logger.Debugf("Sending request to send: %+v...", req)
+	if err := req.Send(conn); err != nil {
+		fmt.Printf("Error: failed to send request: %v\n", err)
 		return err
 	}
-	logger.Debugf("Seeking to %d", prevSentSize)
-	if _, err := file.Seek(int64(prevSentSize), 0); err != nil {
-		fmt.Printf("Error seeking in file: %v\n", err)
+
+	logger.Debugf("Waiting for request to receive...")
+	res := proto.RequestToReceive{}
+	if err := res.Read(conn); err != nil {
+		fmt.Printf("Error: failed to receive response: %v\n", err)
 		return err
 	}
+	logger.Debugf("Request to receive received: %+v", res)
 
-	fmt.Printf("Waiting for peer to accept file...\n")
-
-	// receive permission
-	var yn [1]byte
-	if err := io2.ReadFull(conn, yn[:]); err != nil {
-		fmt.Printf("Error reading peer's response to proceed: %v\n", err)
-		return fmt.Errorf("read proceed: %v", err)
-	}
-
-	if yn[0] != 1 {
-		if prevSentSize == size {
-			fmt.Println("File previously received in its entirety")
+	if !res.Proceed {
+		if res.Offset == filesize {
+			fmt.Println("File already sent")
 			return nil
 		}
-		fmt.Printf("transfer denied\n")
+		fmt.Println("Transfer denied")
 		return fmt.Errorf("transfer denied")
 	}
-	fmt.Printf("transfer accepted\n")
+	fmt.Println("Transfer accepted")
+
+	if _, err := file.Seek(int64(res.Offset), 0); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return err
+	}
 
 	streamCipher, key, err := createStream()
 	if err != nil {
-		fmt.Printf("Error setting up crypto: %v", err)
+		fmt.Printf("Error: %v\n", err)
 		return err
 	}
 	fmt.Printf("Shared key is %s\n", key)
 
-	fmt.Printf("Waiting for remote to start transfer...\n")
-	if _, err := io.ReadFull(conn, yn[:]); err != nil {
-		fmt.Printf("err: %v\n", err)
+	fmt.Println("Waiting for remote to start transfer...")
+	if _, err := io.ReadFull(conn, []byte{0}); err != nil {
+		fmt.Printf("Error waiting for remote to start transfer: %v\n", err)
 		return err
 	}
 
@@ -140,11 +126,11 @@ func send(peer, filepath string) error {
 	encryptedConn := cipher.StreamWriter{S: streamCipher, W: conn}
 	startTime := time.Now()
 	logger.Debugf("Transferring bytes starting at %v. Offset: %d. Block size is %d.",
-		startTime, prevSentSize, common.BlockSize)
-	toSend := size - prevSentSize
+		startTime, res.Offset, common.BlockSize)
+	toSend := filesize - res.Offset
 	sent, err := io2.CopyInChunks(context.TODO(), encryptedConn, file, toSend, common.BlockSize, func(sent uint64) {
 		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
-			sent, size, 100*sent/toSend, time.Now().Unix()-startTime.Unix())
+			sent, filesize, 100*sent/toSend, time.Now().Unix()-startTime.Unix())
 	})
 	endTime := time.Now()
 	if err != nil {
@@ -214,23 +200,14 @@ func resolvePeer(peer string) (*net.TCPAddr, error) {
 	return &net.TCPAddr{IP: addr, Port: service.Port}, nil
 }
 
-func hashAndSend(file *os.File, conn net.Conn) ([]byte, error) {
+func hash(file *os.File) ([sha256.Size]byte, error) {
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
-		return nil, fmt.Errorf("hash file: %v", err)
+		return [sha256.Size]byte{}, fmt.Errorf("hash file: %v", err)
 	}
-	if _, err := file.Seek(0, 0); err != nil {
-		return nil, fmt.Errorf("seek file: %v\n", err)
-	}
-	sum := hash.Sum(nil)
-
-	logger.Debugf("Sending hash %x...", sum)
-	if _, err := io.Copy(conn, bytes.NewReader(sum)); err != nil {
-		return nil, fmt.Errorf("send hash: %v\n", err)
-	}
-	logger.Debug("Hash sent")
-
-	return sum, nil
+	var h [sha256.Size]byte
+	copy(h[:], hash.Sum(nil))
+	return h, nil
 }
 
 func createStream() (cipher.Stream, string, error) {

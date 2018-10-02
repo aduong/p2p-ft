@@ -10,9 +10,6 @@ import (
 const BlockSize uint64 = 1024 * 1024 // 1 MB
 const P2PServiceType = "_adrp2p._tcp"
 
-const FilenameSize = 256
-const ContentLengthSize = 8 // 8 bytes = 64 bits for uint64
-
 var suffixes = []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB"}
 
 func PrettySize(x uint64) (string, string) {

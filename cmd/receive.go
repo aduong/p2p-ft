@@ -24,6 +24,7 @@ import (
 
 	"github.com/aduong/p2p-ft/common"
 	io2 "github.com/aduong/p2p-ft/io"
+	"github.com/aduong/p2p-ft/proto"
 )
 
 var receiveDir string
@@ -110,58 +111,45 @@ type connHandler struct {
 func (h connHandler) handle() error {
 	defer h.conn.Close()
 
-	logger.Debug("reading file name...")
-	filename, err := h.readFilename()
-	if err != nil {
+	logger.Debugf("Waiting for request to send...")
+	req := proto.RequestToSend{}
+	if err := req.Read(h.conn); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return err
 	}
-	fmt.Printf("File name: '%s'\n", filename)
+	logger.Debugf("Received request: %+v", req)
 
-	logger.Debug("reading file size")
-	filesize, err := io2.ReadUInt64(h.conn)
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-		return err
-	}
-	roughSize, sizeSuffix := common.PrettySize(filesize)
-	fmt.Printf("File size: %d B ~ %s %s \n", filesize, roughSize, sizeSuffix)
-
-	logger.Debug("Waiting for hash from remote...")
-	hash := [sha256.Size]byte{}
-	if _, err := io.ReadFull(h.conn, hash[:]); err != nil {
-		fmt.Printf("Error receiving file hash: %v\n", err)
-		return err
-	}
-	logger.Debugf("Received file hash is %x", hash)
+	printReq(req)
 
 	prevSize := uint64(0)
 
-	if existingHash, err := h.hashOfExistingFile(filename); err != nil {
+	if existingHash, err := h.hashOfExistingFile(req.Filename); err != nil {
+		fmt.Printf("Error: %v\n", err)
 		return err
-	} else if common.EqualBytes(hash[:], existingHash) {
-		logger.Debugf("Already have the file with name %s and hash %x", filename, hash)
-		fmt.Println("That file has already been received!")
-		prevSize = filesize
+	} else if common.EqualBytes(req.SHA256sum[:], existingHash) {
+		logger.Debugf("Already have the file with name %s and hash %x", req.Filename, hash)
+		prevSize = req.ContentLength
 	}
 
+	incompleteFilename := hex.EncodeToString(req.SHA256sum[:])
+
 	if prevSize == 0 {
-		prevSize, err = h.existingHashFile(hash[:])
+		var err error
+		prevSize, err = filesize(incompleteFilename)
 		if err != nil {
 			fmt.Printf("Error checking for existing hash file: %v\n", err)
 			return err
 		}
-		logger.Debugf("Size from file with name %x: %d", hash, prevSize)
+		logger.Debugf("Size from file with name %s: %d", incompleteFilename, prevSize)
 	}
 
-	logger.Debugf("Sending size %d to peer", prevSize)
-	if err := io2.WriteUInt64(h.conn, prevSize); err != nil {
-		fmt.Printf("Error sending previously received file size back: %v\n", err)
-		return err
-	}
-
-	if prevSize == filesize {
-		return h.sendProceed(false)
+	if prevSize == req.ContentLength {
+		fmt.Println("That file has already been received!")
+		res := proto.RequestToReceive{
+			Offset:  req.ContentLength,
+			Proceed: false,
+		}
+		return res.Send(h.conn)
 	}
 
 	proceed, err := h.readProceed()
@@ -169,11 +157,16 @@ func (h connHandler) handle() error {
 		fmt.Printf("Error proceeding: %v\n", err)
 		return err
 	}
-	if !proceed {
-		return h.sendProceed(false)
+
+	res := proto.RequestToReceive{
+		Offset:  prevSize,
+		Proceed: proceed,
 	}
-	if err := h.sendProceed(true); err != nil {
-		fmt.Printf("Error signalling to proceed: %v\n", err)
+	if !proceed {
+		return res.Send(h.conn)
+	}
+	if err := res.Send(h.conn); err != nil {
+		fmt.Printf("Error: %v\n", err)
 		return err
 	}
 
@@ -183,7 +176,10 @@ func (h connHandler) handle() error {
 		return err
 	}
 
-	file, err := os.OpenFile(path.Join(receiveDir, hex.EncodeToString(hash[:])), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0666)
+	file, err := os.OpenFile(
+		path.Join(receiveDir, incompleteFilename),
+		os.O_WRONLY|os.O_APPEND|os.O_CREATE,
+		0666)
 	if err != nil {
 		fmt.Printf("Error opening file: %v\n", err)
 		return err
@@ -197,10 +193,10 @@ func (h connHandler) handle() error {
 
 	startTime := time.Now()
 	logger.Debugf("Awaiting bytes at %v. Block size is %d.", startTime, common.BlockSize)
-	toReceive := filesize - prevSize
+	toReceive := req.ContentLength - prevSize
 	received, err := io2.CopyInChunks(context.TODO(), file, cipher.StreamReader{S: streamCipher, R: h.conn}, toReceive, common.BlockSize, func(received uint64) {
 		fmt.Printf("%d / %d (%d%%) %d seconds elapsed\n",
-			received, filesize, 100*received/toReceive, time.Now().Unix()-startTime.Unix())
+			received, req.ContentLength, 100*received/toReceive, time.Now().Unix()-startTime.Unix())
 	})
 	endTime := time.Now()
 	if err != nil {
@@ -213,8 +209,8 @@ func (h connHandler) handle() error {
 	fmt.Printf("Received %d bytes in %d seconds\n", received, endTime.Unix()-startTime.Unix())
 
 	if err := os.Rename(
-		path.Join(receiveDir, hex.EncodeToString(hash[:])),
-		path.Join(receiveDir, filename)); err != nil {
+		path.Join(receiveDir, incompleteFilename),
+		path.Join(receiveDir, req.Filename)); err != nil {
 		fmt.Printf("Error moving completed file: %v\n", err)
 	}
 
@@ -222,7 +218,7 @@ func (h connHandler) handle() error {
 }
 
 func (h connHandler) readFilename() (string, error) {
-	var filenameBytes [common.FilenameSize]byte
+	var filenameBytes [proto.FilenameSize]byte
 	if err := io2.ReadFull(h.conn, filenameBytes[:]); err != nil {
 		return "", fmt.Errorf("read filename: %v", err)
 	}
@@ -296,8 +292,8 @@ func (h connHandler) hashOfExistingFile(filename string) ([]byte, error) {
 	return hash.Sum(nil), nil
 }
 
-func (h connHandler) existingHashFile(hash []byte) (uint64, error) {
-	info, err := os.Stat(path.Join(receiveDir, hex.EncodeToString(hash)))
+func filesize(filename string) (uint64, error) {
+	info, err := os.Stat(path.Join(receiveDir, filename))
 	if os.IsNotExist(err) {
 		return 0, nil
 	}
@@ -305,4 +301,11 @@ func (h connHandler) existingHashFile(hash []byte) (uint64, error) {
 		return 0, err
 	}
 	return uint64(info.Size()), nil
+}
+
+func printReq(req proto.RequestToSend) {
+	fmt.Printf("Filename: %s\n", req.Filename)
+	s, suf := common.PrettySize(req.ContentLength)
+	fmt.Printf("Size: %d B ~ %s %s\n", req.ContentLength, s, suf)
+	fmt.Printf("SHA256 hash: %x\n", req.SHA256sum)
 }

@@ -38,12 +38,15 @@ var receiveCmd = &cobra.Command{
 	Use:   "receive [NAME]",
 	Short: "Start receiving files from peers",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	Run: func(cmd *cobra.Command, args []string) {
 		var serviceName string
 		if len(args) > 0 {
 			serviceName = args[0]
 		}
-		return receiver{serviceName}.receive()
+		r := receiver{serviceName}
+		if err := r.receive(); err != nil {
+			os.Exit(1)
+		}
 	},
 }
 

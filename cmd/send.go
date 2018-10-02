@@ -34,11 +34,10 @@ var sendCmd = &cobra.Command{
 		}
 		return nil
 	},
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) < 2 {
-			return fmt.Errorf("not enough arguments")
+	Run: func(cmd *cobra.Command, args []string) {
+		if err := send(args[0], args[1]); err != nil {
+			os.Exit(1)
 		}
-		return send(args[0], args[1])
 	},
 }
 

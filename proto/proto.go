@@ -53,7 +53,7 @@ func (r *RequestToSend) FromBytes(data []byte) error {
 	}
 	offset := 0
 
-	r.Filename = strings.TrimRight(string(data[offset : offset+FilenameSize]), "\x00")
+	r.Filename = strings.TrimRight(string(data[offset:offset+FilenameSize]), "\x00")
 	offset += FilenameSize
 
 	r.ContentLength = binary.BigEndian.Uint64(data[offset : offset+contentLengthSize])

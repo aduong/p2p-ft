@@ -50,7 +50,7 @@ func send(peer, filepath string) error {
 	}
 
 	// resolving peer
-	fmt.Printf("Resolving peer '%s'...", peer)
+	fmt.Printf("Resolving peer '%s'...\n", peer)
 	addr, err := resolvePeer(peer)
 	if err != nil {
 		fmt.Printf("Error resolving peer: %v\n", err)

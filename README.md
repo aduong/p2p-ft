@@ -16,7 +16,13 @@ On the sending side
 
 ## Demo
 
-TODO
+Receiver
+
+[![asciicast](https://asciinema.org/a/d2b4qHdVEtZ6BIOygKTRFIzdC.png)](https://asciinema.org/a/d2b4qHdVEtZ6BIOygKTRFIzdC)
+
+Sender
+
+[![asciicast](https://asciinema.org/a/NI1XWS8UExQU65i3f9euKlI4t.png)](https://asciinema.org/a/NI1XWS8UExQU65i3f9euKlI4t)
 
 ## Features
 

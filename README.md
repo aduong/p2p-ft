@@ -14,11 +14,11 @@
 
 On the receiving side
 
-    p2p receive adrian
+    p2p-ft receive adrian
 
 On the sending side
 
-    p2p send adrian ~/archive.tar.gz
+    p2p-ft send adrian ~/archive.tar.gz
 
 ## Demo
 

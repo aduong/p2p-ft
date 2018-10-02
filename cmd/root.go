@@ -17,8 +17,8 @@ func init() {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "p2p",
-	Short: "p2p is an efficient and secure p2p file transfer utility",
+	Use:   "p2p-ft",
+	Short: "p2p-ft is an efficient and secure p2p file transfer utility",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		logger = common.CreateLogger(debug).Sugar()
 	},

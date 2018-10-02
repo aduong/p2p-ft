@@ -1,12 +1,12 @@
 .PHONY: all
-all: p2p p2p-mac
+all: p2p-ft p2p-ft-mac
 
 .PHONY: clean
 clean:
-	rm -f ./p2p ./p2p-mac
+	rm -f ./p2p-ft ./p2p-ft-mac
 
-p2p:
-	go build -o p2p ./main.go
+p2p-ft:
+	go build -o p2p-ft ./main.go
 
-p2p-mac:
-	GOOS=darwin go build -o p2p-mac ./main.go
+p2p-ft-mac:
+	GOOS=darwin go build -o p2p-ft-mac ./main.go

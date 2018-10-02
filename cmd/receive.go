@@ -140,6 +140,12 @@ func (h connHandler) handle() error {
 			fmt.Printf("Error checking for existing hash file: %v\n", err)
 			return err
 		}
+		if prevSize > 0 {
+			remain := req.ContentLength - prevSize
+			s, suf := common.PrettySize(remain)
+			fmt.Printf("File with hash %x previously received but stopped at %d bytes.\n%d bytes ~ %s %s remain\n",
+				req.SHA256sum, prevSize, remain, s, suf)
+		}
 		logger.Debugf("Size from file with name %s: %d", incompleteFilename, prevSize)
 	}
 

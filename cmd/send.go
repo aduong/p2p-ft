@@ -76,6 +76,8 @@ func send(peer, filepath string) error {
 		return err
 	}
 
+	fmt.Printf("Done. Sending request to %s and waiting for response...\n", peer)
+
 	req := proto.RequestToSend{
 		Filename:      filename,
 		ContentLength: filesize,
